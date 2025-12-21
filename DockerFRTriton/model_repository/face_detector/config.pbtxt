@@ -1,0 +1,28 @@
+name: "face_detector"
+platform: "onnxruntime_onnx"
+max_batch_size: 1
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [3, 640, 640]
+  }
+]
+output [
+  {
+    name: "loc"
+    data_type: TYPE_FP32
+    dims: [16800, 4]
+  },
+  {
+    name: "conf"
+    data_type: TYPE_FP32
+    dims: [16800, 2]
+  },
+  {
+    name: "landms"
+    data_type: TYPE_FP32
+    dims: [16800, 10]
+  }
+]
+instance_group [ { kind: KIND_CPU } ]

@@ -1,100 +1,94 @@
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
-
 from fastapi import FastAPI, File, HTTPException, UploadFile
-
-from pipeline import calculate_face_similarity
+from pipeline import calculate_face_similarity, get_embedding
 from triton_service import (
     TRITON_HTTP_PORT,
     create_triton_client,
     prepare_model_repository,
-    run_inference,
     start_triton_server,
     stop_triton_server,
 )
 
 MODEL_REPO = Path(__file__).parent / "model_repository"
-
-app = FastAPI(
-    title="FR Triton API",
-    description="Minimal FastAPI wrapper around Triton Inference Server for FR embeddings.",
-    version="0.1.0",
-)
+app = FastAPI(title="FR Triton API", version="0.1.0")
 
 _server_handle: Optional[Any] = None
 _triton_client: Optional[Any] = None
 logger = logging.getLogger("fr_triton_app")
-
+logging.basicConfig(level=logging.INFO)
 
 @app.on_event("startup")
 def startup_event() -> None:
-    """
-    Prepare the Triton model repo, launch the server, and create an HTTP client.
-    This is a reference implementation for students; adjust paths as needed.
-    """
     global _server_handle, _triton_client
-    if os.getenv("SKIP_TRITON"):
-        logger.warning("SKIP_TRITON is set; FastAPI will run without Triton. Endpoints will return 503.")
-        return
 
+    # [수정됨] Triton 실행 여부와 상관없이 모델 설정 파일(config.pbtxt)은 항상 확인/생성
     try:
+        logger.info("[app] Preparing model repository configs...")
         prepare_model_repository(MODEL_REPO)
-        _server_handle = start_triton_server(MODEL_REPO)
-        _triton_client = create_triton_client(f"http://localhost:{TRITON_HTTP_PORT}")
-    except FileNotFoundError as exc:
-        logger.error("Model repository missing required ONNX/model files: %s", exc)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Failed to start Triton: %s", exc)
+    except Exception as e:
+        logger.error(f"[app] Error preparing model repository: {e}")
 
+    # 1. Triton Server 실행 로직
+    if os.getenv("SKIP_TRITON"):
+        logger.info("[app] SKIP_TRITON is set. Assuming Triton is managed externally (e.g., by start.sh).")
+    else:
+        logger.info("[app] Starting Triton server internally...")
+        try:
+            _server_handle = start_triton_server(MODEL_REPO)
+        except Exception as exc:
+            logger.error(f"[app] Failed to start Triton: {exc}")
+            pass
+
+    # 2. Triton Client 연결 로직
+    url = f"localhost:{TRITON_HTTP_PORT}"
+    connected = False
+    
+    for i in range(30):
+        try:
+            _triton_client = create_triton_client(url)
+            logger.info("[app] Successfully connected to Triton.")
+            connected = True
+            break
+        except Exception:
+            logger.warning(f"[app] Triton not ready yet. Retrying in 1s... ({i+1}/30)")
+            time.sleep(1)
+            
+    if not connected:
+        logger.error("[app] Could not connect to Triton server after 30 seconds.")
 
 @app.on_event("shutdown")
 def shutdown_event() -> None:
-    """Stop the Triton server when the FastAPI app shuts down."""
     global _server_handle
-    stop_triton_server(_server_handle)
-    _server_handle = None
+    if _server_handle:
+        stop_triton_server(_server_handle)
 
+@app.get("/health")
+def health() -> dict:
+    status = "ok" if _triton_client is not None else "degraded"
+    return {"status": status}
 
-@app.get("/health", tags=["Health"])
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/embedding", tags=["Face Recognition"])
-async def embedding(image: UploadFile = File(..., description="Face image to embed")) -> dict[str, Any]:
+@app.post("/embedding")
+async def embedding(image: UploadFile = File(...)) -> dict:
     if _triton_client is None:
-        raise HTTPException(status_code=503, detail="Triton client is not initialized.")
-
+        raise HTTPException(status_code=503, detail="Triton not ready")
     content = await image.read()
     try:
-        embedding_arr = run_inference(_triton_client, content)
-    except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
+        emb = get_embedding(_triton_client, content)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"embedding": emb.tolist()}
 
-    embedding_list = embedding_arr.reshape(embedding_arr.shape[0], -1).tolist()
-    return {"embedding": embedding_list}
-
-
-@app.post("/face-similarity", tags=["Face Recognition"])
-async def face_similarity(
-    image_a: UploadFile = File(..., description="First face image (aligned to model input size)"),
-    image_b: UploadFile = File(..., description="Second face image (aligned to model input size)"),
-) -> dict[str, Any]:
+@app.post("/face-similarity")
+async def face_similarity(image_a: UploadFile = File(...), image_b: UploadFile = File(...)) -> dict:
     if _triton_client is None:
-        raise HTTPException(status_code=503, detail="Triton client is not initialized.")
-
-    content_a, content_b = await image_a.read(), await image_b.read()
+        raise HTTPException(status_code=503, detail="Triton not ready")
+    a, b = await image_a.read(), await image_b.read()
     try:
-        score = calculate_face_similarity(_triton_client, content_a, content_b)
-    except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=500, detail=f"Similarity failed: {exc}") from exc
-
+        score = calculate_face_similarity(_triton_client, a, b)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     return {"similarity": score}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("app:app", host="0.0.0.0", port=5004, reload=False)

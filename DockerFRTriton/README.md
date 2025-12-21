@@ -1,3 +1,41 @@
+# 20222395 김민성
+
+아래 가이드를 따라 환경을 설정하고 실행해 주세요.
+
+### 1. 가상 환경 설정
+먼저 Conda 가상 환경을 생성하고 필요한 의존성 패키지를 설치합니다.
+
+```bash
+# 1. Python 3.9 환경 생성
+conda create -n aisystem python=3.9 -y
+
+# 2. 가상 환경 활성화
+conda activate aisystem
+
+# 3. 의존성 패키지 설치
+pip install -r requirements.txt
+```
+
+### 2. ONNX 모델 변환
+```bash
+# Face Recognition 모델 변환
+python convert_to_onnx.py
+
+# Face Detection 모델 변환
+python export_retinaface_to_onnx.py
+```
+
+### 3. Docker 서비스 배포
+```bash
+# Docker 이미지 빌드
+docker build -t fr-triton -f Docker/Dockerfile .
+
+# Docker 컨테이너 실행
+docker run --rm -p 8000:8000 -p 8001:8001 -p 8002:8002 -p 3000:3000 --name fr_triton fr-triton
+```
+
+API 문서 주소: http://localhost:3000/docs
+
 # DockerFRTriton
 
 Serve a face-recognition (FR) system on Triton Inference Server (CPU) with a FastAPI wrapper. Students must export models to ONNX, build a Triton-ready model repository, and keep all inference on Triton (FR backbone, detector, and any future alignment/spoofing).
