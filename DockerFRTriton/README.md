@@ -17,6 +17,8 @@ pip install -r requirements.txt
 ```
 
 ### 2. ONNX 모델 변환
+100MB 이상의 ONNX 모델이 올라가지 않아 아래 python 파일로 ONNX 모델을 변환합니다.
+
 ```bash
 # Face Recognition 모델 변환
 python convert_to_onnx.py
